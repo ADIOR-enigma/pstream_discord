@@ -4,7 +4,7 @@ This Cloudflare Worker acts as a reverse proxy for embedding `https://pstream.cf
 
 ## Why is this needed?
 1. **CSP & Same-Origin Restrictions:** Discord Activity iframes enforce a strict Content Security Policy (CSP). Outbound `fetch()` requests to absolute URLs like `https://api.themoviedb.org` or `https://court.fontaine.lol` are blocked.
-2. **Relative URL Requirement:** For Discord's **Proxy Path Mappings** to work, the frontend must make requests to relative paths (`/tmdb/...`, `/court/...`, `/justice/...`).
+2. **Relative URL Requirement:** To route traffic through our single Worker root mapping, the frontend must make requests to relative paths (`/z-tmdb/...`, `/z-court/...`, etc.).
 3. **SRI (Subresource Integrity) Fix:** Because `pstream.cfd` returns pre-compiled JS bundles with hardcoded absolute URLs, this Worker intercepts the HTML and JS on the fly, rewriting `https://...` to relative paths. Modifying JavaScript bundles invalidates their `integrity="sha512-..."` hashes in the HTML (`index.html`), so the Worker automatically strips SRI attributes from `<script>` tags to prevent browsers from rejecting the rewritten code.
 
 ---
@@ -36,20 +36,6 @@ Go to your application in the **Discord Developer Portal** ➔ **URL Mappings** 
 
 ### Root Mapping
 * **Prefix:** `/`
-* **Target:** `zstream-discord-proxy.yourname.workers.dev` *(Your Cloudflare Worker URL without `https://`)*
-
-### Proxy Path Mappings
-Add these mappings so Discord's proxy intercepts the rewritten relative paths:
-
-| Prefix | Target | Description |
-| :--- | :--- | :--- |
-| `/tmdb` | `api.themoviedb.org` | TMDB API endpoints |
-| `/image-tmdb` | `image.tmdb.org` | TMDB Posters & Backdrops |
-| `/sync` | `sync.pstream.cfd` | P-Stream Sync Backend API |
-| `/court` | `court.fontaine.lol` | Fontaine metadata API |
-| `/justice` | `justice.fontaine.lol` | Fontaine tracking & site API |
-| `/aurora` | `aurora.fontaine.lol` | Fontaine traffic / setup API |
-| `/natsuki` | `natsuki.fontaine.lol` | Subtitle API |
-| `/artemis` | `artemis.fontaine.lol` | Casting API |
+* **Target:** `zstream-discord-proxy.yourname.workers.dev`
 
 Once configured, launch your Discord Activity. All API and metadata calls from `pstream.cfd` will transparently route through your Cloudflare Worker and Discord's internal proxy tunnels without CORS, SRI, or CSP failures!
