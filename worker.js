@@ -188,8 +188,8 @@ export default {
       cleanHeaders.set(key, value);
     }
     // Always spoof Origin and Referer to the main domain so upstream doesn't block hotlinking.
-    cleanHeaders.set('Origin', 'https://pstream.cfd');
-    cleanHeaders.set('Referer', 'https://pstream.cfd/');
+      cleanHeaders.set('Origin', 'https://pstream.cfd');
+      cleanHeaders.set('Referer', 'https://pstream.cfd/');
     
     let ua = request.headers.get('User-Agent') || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
     ua = ua.replace(/Discord[\w.-]*\/\d+[\.\d]*\s*/g, '');
@@ -247,7 +247,19 @@ export default {
     const isHtml = contentType.includes('text/html');
     const isJs   = contentType.includes('application/javascript') || contentType.includes('text/javascript');
 
-    if (isHtml && response.status === 200) {
+    const acceptHeader = request.headers.get('Accept') || '';
+    const secFetchDest = (request.headers.get('Sec-Fetch-Dest') || request.headers.get('sec-fetch-dest') || '').toLowerCase();
+    
+    let isNavigation = false;
+    if (secFetchDest === 'document' || secFetchDest === 'iframe') {
+      isNavigation = true;
+    } else if (secFetchDest === 'empty' || secFetchDest === 'video' || secFetchDest === 'audio') {
+      isNavigation = false;
+    } else {
+      isNavigation = acceptHeader.includes('text/html');
+    }
+
+    if (isHtml && response.status === 200 && isNavigation) {
       responseHeaders.delete('Content-Encoding'); // We uncompress HTML text here
       let text = await response.text();
       // Delete ETag and Last-Modified so Discord's proxy / browser never caches modified HTML or JS bundles
