@@ -2,16 +2,16 @@
 /* ZStream Discord Activity Interceptor v8 */
 (function() {
   const CURRENT_PATCH_VERSION = 8;
-  if (typeof globalThis !== 'undefined' && (!globalThis.__ZSTREAM_PATCH_VERSION__ || globalThis.__ZSTREAM_PATCH_VERSION__ < CURRENT_PATCH_VERSION)) {
-    globalThis.__ZSTREAM_PATCH_VERSION__ = CURRENT_PATCH_VERSION;
-    globalThis.__ZSTREAM_PATCHED__ = true;
+  if (typeof globalThis !== 'undefined' && (!globalThis.__PSTREAM_PATCH_VERSION__ || globalThis.__PSTREAM_PATCH_VERSION__ < CURRENT_PATCH_VERSION)) {
+    globalThis.__PSTREAM_PATCH_VERSION__ = CURRENT_PATCH_VERSION;
+    globalThis.__PSTREAM_PATCHED__ = true;
 
-    if (!globalThis.__ZSTREAM_SPOOF_IP) {
-      globalThis.__ZSTREAM_SPOOF_IP = '73.' + (Math.floor(Math.random() * 156) + 100) + '.' + Math.floor(Math.random() * 255) + '.' + Math.floor(Math.random() * 255);
+    if (!globalThis.__PSTREAM_SPOOF_IP) {
+      globalThis.__PSTREAM_SPOOF_IP = '73.' + (Math.floor(Math.random() * 156) + 100) + '.' + Math.floor(Math.random() * 255) + '.' + Math.floor(Math.random() * 255);
     }
 
-    if (!globalThis.__ZSTREAM_ORIGINALS__) {
-      globalThis.__ZSTREAM_ORIGINALS__ = {
+    if (!globalThis.__PSTREAM_ORIGINALS__) {
+      globalThis.__PSTREAM_ORIGINALS__ = {
         fetch: globalThis.fetch,
         Request: globalThis.Request,
         XMLHttpRequest: globalThis.XMLHttpRequest,
@@ -22,14 +22,14 @@
       };
     }
 
-    const ORIGINALS = globalThis.__ZSTREAM_ORIGINALS__;
+    const ORIGINALS = globalThis.__PSTREAM_ORIGINALS__;
 
     // ── Client Logger ──────────────────────────────────────────────────────────
-    if (typeof window !== 'undefined' && !globalThis.__ZSTREAM_LOGGER_INIT) {
-      globalThis.__ZSTREAM_LOGGER_INIT = true;
+    if (typeof window !== 'undefined' && !globalThis.__PSTREAM_LOGGER_INIT) {
+      globalThis.__PSTREAM_LOGGER_INIT = true;
       function sendLog(msg) {
         try {
-           ORIGINALS.fetch.call(globalThis, '/z-log', {
+           ORIGINALS.fetch.call(globalThis, '/p-log', {
              method: 'POST',
              body: JSON.stringify({log: msg}),
              headers: {'Content-Type': 'application/json'}
@@ -116,14 +116,16 @@
 
     function isAlreadyProxied(urlStr) {
       if (!urlStr) return false;
-      return urlStr.includes('zstream-discord-proxy.anubhabd116.workers.dev') || 
-             urlStr.includes('/z-ext/') || 
-             urlStr.includes('/z-stream/') || 
-             urlStr.includes('/z-image/') || 
-             urlStr.includes('/z-tmdb/') || 
-             urlStr.includes('/z-introdb/') || 
-             urlStr.includes('/z-sync/') ||
-             urlStr.includes('/z-cdn/');
+      return urlStr.includes('pstream-discord-proxy.anubhabd116.workers.dev') || 
+             urlStr.includes('/p-ext/') || 
+             urlStr.includes('/p-image/') || 
+             urlStr.includes('/p-tmdb/') || 
+             urlStr.includes('/p-sync/') ||
+             urlStr.includes('/p-ava/') ||
+             urlStr.includes('/p-ivi/') ||
+             urlStr.includes('/p-eve/') ||
+             urlStr.includes('/p-anilist-graphql/') ||
+             urlStr.includes('/p-anilist/');
     }
 
     // ── URL rewriter ───────────────────────────────────────────────────────────
@@ -143,24 +145,14 @@
           u = 'https:' + u;
         }
 
-        if (u.startsWith('https://stream.fontaine.lol')) { outU = u.replace('https://stream.fontaine.lol', '/z-stream'); isProxied = true; }
-        else if (u.startsWith('https://strm.fontaine.lol')) { outU = u.replace('https://strm.fontaine.lol', '/z-strm'); isProxied = true; }
-        else if (u.startsWith('https://cdn.fontaine.lol')) { outU = u.replace('https://cdn.fontaine.lol', '/z-cdn'); isProxied = true; }
-        else if (u.startsWith('https://api.themoviedb.org') || u.startsWith('https://api.tmdb.org')) { outU = u.replace(/^https:\/\/api\.(themoviedb|tmdb)\.org/, '/z-tmdb'); isProxied = true; }
-        else if (u.startsWith('https://image.tmdb.org')) { outU = u.replace('https://image.tmdb.org', '/z-image'); isProxied = true; }
-        else if (u.startsWith('https://court.fontaine.lol')) { outU = u.replace('https://court.fontaine.lol', '/z-court'); isProxied = true; }
-        else if (u.startsWith('https://justice.fontaine.lol')) { outU = u.replace('https://justice.fontaine.lol', '/z-justice'); isProxied = true; }
-        else if (u.startsWith('https://aurora.fontaine.lol')) { outU = u.replace('https://aurora.fontaine.lol', '/z-aurora'); isProxied = true; }
-        else if (u.startsWith('https://natsuki.fontaine.lol')) { outU = u.replace('https://natsuki.fontaine.lol', '/z-natsuki'); isProxied = true; }
-        else if (u.startsWith('https://artemis.fontaine.lol')) { outU = u.replace('https://artemis.fontaine.lol', '/z-artemis'); isProxied = true; }
-        else if (u.startsWith('https://tokyo.fontaine.lol')) { outU = u.replace('https://tokyo.fontaine.lol', '/z-tokyo'); isProxied = true; }
-        else if (u.startsWith('https://api.theintrodb.org')) { outU = u.replace('https://api.theintrodb.org', '/z-introdb'); isProxied = true; }
-        else if (u.startsWith('https://enc-dec.app')) { outU = u.replace('https://enc-dec.app', '/z-encdec'); isProxied = true; }
-        else if (u.startsWith('https://api.balloonerismm.workers.dev')) { outU = u.replace('https://api.balloonerismm.workers.dev', '/z-balloon'); isProxied = true; }
-        else if (u.startsWith('https://apis.justwatch.com')) { outU = u.replace('https://apis.justwatch.com', '/z-jw-api'); isProxied = true; }
-        else if (u.startsWith('https://images.justwatch.com')) { outU = u.replace('https://images.justwatch.com', '/z-jw-img'); isProxied = true; }
-        else if (u.startsWith('https://api.real-debrid.com')) { outU = u.replace('https://api.real-debrid.com', '/z-debrid'); isProxied = true; }
-        else if (u.startsWith('https://sync.pstream.cfd')) { outU = u.replace('https://sync.pstream.cfd', '/z-sync'); isProxied = true; }
+        if (u.startsWith('https://api.themoviedb.org') || u.startsWith('https://api.tmdb.org')) { outU = u.replace(/^https:\/\/api\.(themoviedb|tmdb)\.org/, '/p-tmdb'); isProxied = true; }
+        else if (u.startsWith('https://image.tmdb.org')) { outU = u.replace('https://image.tmdb.org', '/p-image'); isProxied = true; }
+        else if (u.startsWith('https://sync.pstream.cfd')) { outU = u.replace('https://sync.pstream.cfd', '/p-sync'); isProxied = true; }
+        else if (u.startsWith('https://ava.pstream.cfd')) { outU = u.replace('https://ava.pstream.cfd', '/p-ava'); isProxied = true; }
+        else if (u.startsWith('https://ivi.pstream.cfd')) { outU = u.replace('https://ivi.pstream.cfd', '/p-ivi'); isProxied = true; }
+        else if (u.startsWith('https://eve.pstream.cfd')) { outU = u.replace('https://eve.pstream.cfd', '/p-eve'); isProxied = true; }
+        else if (u.startsWith('https://graphql.anilist.co')) { outU = u.replace('https://graphql.anilist.co', '/p-anilist-graphql'); isProxied = true; }
+        else if (u.startsWith('https://anilist.co')) { outU = u.replace('https://anilist.co', '/p-anilist'); isProxied = true; }
         else if (u.startsWith('https://challenges.cloudflare.com')) { return u; }
         else if (u.startsWith('http://') || u.startsWith('https://')) {
           const origin = safeOrigin();
@@ -169,15 +161,15 @@
             try {
               encodedU = btoa(unescape(encodeURIComponent(u))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
             } catch(e) {}
-            outU = '/z-ext/' + encodedU + '/';
+            outU = '/p-ext/' + encodedU + '/';
             isProxied = true;
           }
         }
       }
 
-      if (isProxied && globalThis.__ZSTREAM_SPOOF_IP && !outU.includes('z_ip=')) {
+      if (isProxied && globalThis.__PSTREAM_SPOOF_IP && !outU.includes('p_ip=')) {
         const sep = outU.includes('?') ? '&' : '?';
-        outU = outU + sep + 'z_ip=' + globalThis.__ZSTREAM_SPOOF_IP;
+        outU = outU + sep + 'p_ip=' + globalThis.__PSTREAM_SPOOF_IP;
       }
       return outU;
     }
@@ -571,9 +563,15 @@
               if (lower === 'video') patchInstanceProp(el, 'poster');
               if (lower === 'script') {
                 try {
-                  const nonceElement = document.querySelector('script[nonce]');
-                  if (nonceElement && nonceElement.nonce) {
-                    el.setAttribute('nonce', nonceElement.nonce);
+                  const proxyNonceEl = document.querySelector('script[data-proxy-nonce]');
+                  if (proxyNonceEl) {
+                    const proxyNonce = proxyNonceEl.getAttribute('data-proxy-nonce');
+                    if (proxyNonce) el.setAttribute('nonce', proxyNonce);
+                  } else {
+                    const nonceElement = document.querySelector('script[nonce]');
+                    if (nonceElement && nonceElement.nonce) {
+                      el.setAttribute('nonce', nonceElement.nonce);
+                    }
                   }
                 } catch(e) {}
               }
@@ -596,9 +594,15 @@
               if (lower === 'video') patchInstanceProp(el, 'poster');
               if (lower === 'script') {
                 try {
-                  const nonceElement = document.querySelector('script[nonce]');
-                  if (nonceElement && nonceElement.nonce) {
-                    el.setAttribute('nonce', nonceElement.nonce);
+                  const proxyNonceEl = document.querySelector('script[data-proxy-nonce]');
+                  if (proxyNonceEl) {
+                    const proxyNonce = proxyNonceEl.getAttribute('data-proxy-nonce');
+                    if (proxyNonce) el.setAttribute('nonce', proxyNonce);
+                  } else {
+                    const nonceElement = document.querySelector('script[nonce]');
+                    if (nonceElement && nonceElement.nonce) {
+                      el.setAttribute('nonce', nonceElement.nonce);
+                    }
                   }
                 } catch(e) {}
               }

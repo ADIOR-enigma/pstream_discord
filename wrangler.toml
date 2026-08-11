@@ -1,4 +1,4 @@
-name = "zstream-discord-proxy"
+name = "pstream-discord-proxy"
 main = "worker.js"
 compatibility_date = "2026-03-01"
 

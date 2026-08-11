@@ -2,13 +2,13 @@
  * Cloudflare Worker Reverse Proxy for Discord Activity (pstream.cfd)
  *
  * This worker:
- * 1. Universal Gateway (`/z-*` prefix): Proxies /z-tmdb, /z-image, /z-court,
- *    /z-justice, /z-aurora, /z-natsuki, /z-artemis (+ legacy /tmdb, /court, etc.)
+ * 1. Universal Gateway (`/p-*` prefix): Proxies /p-tmdb, /p-image, /p-court,
+ *    /p-justice, /p-aurora, /p-natsuki, /p-artemis (+ legacy /tmdb, /court, etc.)
  * 2. Header Sanitization: Strips CF-*, X-Forwarded-*, Host, Origin, Referer, Cookie
  *    before egress. We do NOT re-add Origin/Referer — doing so causes HTTP 525
  *    SSL Handshake Failed on Cloudflare-to-Cloudflare requests.
  * 3. Runtime Interceptor: Prepended to every HTML and JS file so that absolute
- *    TMDB/Fontaine URLs are rewritten to relative /z-* paths before the browser
+ *    TMDB/Fontaine URLs are rewritten to relative /p-* paths before the browser
  *    sees them — bypassing Discord Activity's strict img-src CSP.
  * 4. Nonce forwarding: We extract the CSP nonce from the page's existing scripts
  *    and apply it to our injected <script> so Discord's CSP doesn't block it.
@@ -20,32 +20,17 @@ import RUNTIME_INTERCEPTOR from './interceptor.js';
 // ── Route table ───────────────────────────────────────────────────────────────
 
 const ROUTES = [
-  { prefixes: ['/z-tmdb/', '/z-tmdb', '/tmdb/', '/tmdb'],   origin: 'https://api.themoviedb.org', strip: /^\/(z-)?tmdb/ },
-  { prefixes: ['/z-image/', '/z-image', '/image-tmdb/', '/image-tmdb'], origin: 'https://image.tmdb.org',    strip: /^\/(z-image|image-tmdb)/ },
-  { prefixes: ['/z-sync/', '/z-sync', '/sync/', '/sync'],      origin: 'https://sync.pstream.cfd',     strip: /^\/(z-)?sync/ },
-  { prefixes: ['/z-court/', '/z-court', '/court/', '/court'],  origin: 'https://court.fontaine.lol',   strip: /^\/(z-)?court/ },
-  { prefixes: ['/z-justice/', '/z-justice', '/justice/', '/justice'], origin: 'https://justice.fontaine.lol', strip: /^\/(z-)?justice/ },
-  { prefixes: ['/z-aurora/', '/z-aurora', '/aurora/', '/aurora'],  origin: 'https://aurora.fontaine.lol',  strip: /^\/(z-)?aurora/ },
-  { prefixes: ['/z-natsuki/', '/z-natsuki', '/natsuki/', '/natsuki'], origin: 'https://natsuki.fontaine.lol', strip: /^\/(z-)?natsuki/ },
-  { prefixes: ['/z-artemis/', '/z-artemis', '/artemis/', '/artemis'], origin: 'https://artemis.fontaine.lol', strip: /^\/(z-)?artemis/ },
-  // Stream source domains returned by providers after scraping — all blocked by connect-src CSP
-  // unless proxied through our worker's /z-* paths.
-  { prefixes: ['/z-stream/', '/z-stream'], origin: 'https://stream.fontaine.lol',  strip: /^\/z-stream/ },
-  { prefixes: ['/z-cdn/',    '/z-cdn'],    origin: 'https://cdn.fontaine.lol',     strip: /^\/z-cdn/ },
-  { prefixes: ['/z-tokyo/',  '/z-tokyo'],  origin: 'https://tokyo.fontaine.lol',   strip: /^\/z-tokyo/ },
-  // strm.fontaine.lol — the actual HLS CDN that providers return in their sources
-  { prefixes: ['/z-strm/',   '/z-strm'],   origin: 'https://strm.fontaine.lol',    strip: /^\/z-strm/ },
-  { prefixes: ['/z-introdb/', '/z-introdb'], origin: 'https://api.theintrodb.org', strip: /^\/z-introdb/ },
-  { prefixes: ['/z-encdec/', '/z-encdec'], origin: 'https://enc-dec.app',          strip: /^\/z-encdec/ },
-  // Additional metadata domains
-  { prefixes: ['/z-balloon/', '/z-balloon'], origin: 'https://api.balloonerismm.workers.dev', strip: /^\/z-balloon/ },
-  { prefixes: ['/z-jw-api/', '/z-jw-api'],   origin: 'https://apis.justwatch.com',          strip: /^\/z-jw-api/ },
-  { prefixes: ['/z-jw-img/', '/z-jw-img'],   origin: 'https://images.justwatch.com',        strip: /^\/z-jw-img/ },
-  { prefixes: ['/z-debrid/', '/z-debrid'],   origin: 'https://api.real-debrid.com',         strip: /^\/z-debrid/ },
+  { prefixes: ['/p-tmdb/', '/p-tmdb', '/tmdb/', '/tmdb'],   origin: 'https://api.themoviedb.org', strip: /^\/(p-)?tmdb/ },
+  { prefixes: ['/p-image/', '/p-image', '/image-tmdb/', '/image-tmdb'], origin: 'https://image.tmdb.org',    strip: /^\/(p-image|image-tmdb)/ },
+  { prefixes: ['/p-sync/', '/p-sync', '/sync/', '/sync'],      origin: 'https://sync.pstream.cfd',     strip: /^\/(p-)?sync/ },
+  { prefixes: ['/p-ava/', '/p-ava'], origin: 'https://ava.pstream.cfd', strip: /^\/p-ava/ },
+  { prefixes: ['/p-ivi/', '/p-ivi'], origin: 'https://ivi.pstream.cfd', strip: /^\/p-ivi/ },
+  { prefixes: ['/p-eve/', '/p-eve'], origin: 'https://eve.pstream.cfd', strip: /^\/p-eve/ },
+  { prefixes: ['/p-anilist-graphql/', '/p-anilist-graphql'], origin: 'https://graphql.anilist.co', strip: /^\/p-anilist-graphql/ },
+  { prefixes: ['/p-anilist/', '/p-anilist'], origin: 'https://anilist.co', strip: /^\/p-anilist/ },
 ];
 
-// Fallback origin for TMDB (used when api.themoviedb.org returns 5xx)
-const TMDB_FALLBACK_ORIGIN = 'https://api.tmdb.org';
+
 
 // ── Worker ────────────────────────────────────────────────────────────────────
 
@@ -54,9 +39,9 @@ export default {
     const url = new URL(request.url);
 
     // Extract consistent spoofed IP generated by the interceptor
-    let spoofedIp = url.searchParams.get('z_ip');
+    let spoofedIp = url.searchParams.get('p_ip');
     if (spoofedIp) {
-      url.searchParams.delete('z_ip'); // Remove from search params so it doesn't leak upstream
+      url.searchParams.delete('p_ip'); // Remove from search params so it doesn't leak upstream
     } else {
       spoofedIp = '73.194.22.115'; // Fallback consistent IP if not provided
     }
@@ -79,7 +64,7 @@ export default {
     }
 
     // Client logger endpoint
-    if (url.pathname === '/z-log') {
+    if (url.pathname === '/p-log') {
       let logMsg = '';
       if (request.method === 'POST') {
         try {
@@ -98,7 +83,7 @@ export default {
     // Serve interceptor as external script so inline HTML injection only inserts
     // a tiny <script src> tag — prevents interceptor source from appearing as
     // visible text when the player error handler reads innerHTML.
-    if (url.pathname === '/z-interceptor.js') {
+    if (url.pathname === '/p-interceptor.js') {
       return new Response(RUNTIME_INTERCEPTOR, {
         headers: {
           'Content-Type': 'application/javascript; charset=utf-8',
@@ -111,14 +96,14 @@ export default {
     // Determine target origin and path
     let targetOrigin = 'https://pstream.cfd';
     let targetPathname = url.pathname;
-    let isTmdb = false;
+
     let targetUrl;
 
-    if (url.pathname.startsWith('/z-ext/')) {
+    if (url.pathname.startsWith('/p-ext/')) {
       let extUrlStr = url.searchParams.get('u');
       
       if (!extUrlStr) {
-        // Try parsing from base64 path: /z-ext/<b64>/<relative>
+        // Try parsing from base64 path: /p-ext/<b64>/<relative>
         const parts = url.pathname.split('/');
         if (parts.length >= 3 && parts[2]) {
           try {
@@ -140,7 +125,7 @@ export default {
 
       if (!extUrlStr) {
         const referer = request.headers.get('Referer');
-        if (referer && referer.includes('/z-ext/')) {
+        if (referer && referer.includes('/p-ext/')) {
           try {
             const refUrl = new URL(referer);
             const refParts = refUrl.pathname.split('/');
@@ -154,7 +139,7 @@ export default {
               }
             }
             if (refU) {
-              const relativePath = url.pathname.replace(/^\/z-ext\/?/, '') + url.search;
+              const relativePath = url.pathname.replace(/^\/p-ext\/?/, '') + url.search;
               extUrlStr = new URL(relativePath, refU).toString();
             }
           } catch(e) {}
@@ -167,7 +152,7 @@ export default {
           targetOrigin = targetUrl.origin;
           targetPathname = targetUrl.pathname;
         } catch (e) {
-          return new Response('Invalid z-ext URL', { status: 400 });
+          return new Response('Invalid p-ext URL', { status: 400 });
         }
       } else {
         return new Response('Missing target parameter or invalid path', { status: 400 });
@@ -178,7 +163,7 @@ export default {
           if (url.pathname === prefix || url.pathname.startsWith(prefix.endsWith('/') ? prefix : prefix + '/')) {
             targetOrigin = route.origin;
             targetPathname = url.pathname.replace(route.strip, '') || '/';
-            isTmdb = route.origin.includes('themoviedb') || route.origin.includes('tmdb.org');
+
             break;
           }
         }
@@ -221,7 +206,7 @@ export default {
     // Upstream fetch with TMDB fallback on 5xx
     async function upstreamFetch(origin, pathname) {
       let fetchUrl;
-      if (url.pathname.startsWith('/z-ext/')) {
+      if (url.pathname.startsWith('/p-ext/')) {
         fetchUrl = targetUrl;
       } else {
         fetchUrl = new URL(pathname + url.search, origin);
@@ -237,17 +222,6 @@ export default {
     let response;
     try {
       response = await upstreamFetch(targetOrigin, targetPathname);
-
-      // If TMDB primary returns 5xx, retry with the alternate base URL
-      if (isTmdb && response.status >= 500) {
-        try {
-          const fallbackOrigin = targetOrigin.includes('themoviedb')
-            ? TMDB_FALLBACK_ORIGIN
-            : 'https://api.themoviedb.org';
-          const fallback = await upstreamFetch(fallbackOrigin, targetPathname);
-          if (fallback.status < 500) response = fallback;
-        } catch(e) { /* keep original response */ }
-      }
     } catch (err) {
       return new Response(`Proxy upstream error: ${err.message}`, { status: 502 });
     }
@@ -293,7 +267,8 @@ export default {
         if (nonceMatch) nonce = nonceMatch[1];
 
         const nonceAttr = nonce ? ` nonce="${nonce}"` : '';
-        const scriptTag = `<script src="/z-interceptor.js"${nonceAttr}></script>`;
+        const dataNonceAttr = nonce ? ` data-proxy-nonce="${nonce}"` : '';
+        const scriptTag = `<script src="/p-interceptor.js"${nonceAttr}${dataNonceAttr}></script>`;
 
         if (/<head[^>]*>/i.test(text)) {
           text = text.replace(/(<head[^>]*>)/i, `$1\n${scriptTag}`);
@@ -315,7 +290,7 @@ export default {
               if (val && !val.startsWith('data:') && !val.startsWith('blob:')) {
                 try {
                   const absUrl = new URL(val, baseUrl).toString();
-                  el.setAttribute(attr, '/z-ext/?u=' + encodeURIComponent(absUrl) + (spoofedIp ? '&z_ip=' + spoofedIp : ''));
+                  el.setAttribute(attr, '/p-ext/?u=' + encodeURIComponent(absUrl) + (spoofedIp ? '&p_ip=' + spoofedIp : ''));
                 } catch(e) {}
               }
             }
@@ -358,7 +333,7 @@ export default {
               absUrl = new URL(trimmed, baseUrl).toString();
             }
             let encodedU = btoa(unescape(encodeURIComponent(absUrl))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-            return '/z-ext/' + encodedU + '/?z_ip=' + spoofedIp;
+            return '/p-ext/' + encodedU + '/?p_ip=' + spoofedIp;
           } catch(e) {
             return line;
           }
@@ -372,7 +347,7 @@ export default {
                 if (!uri.startsWith('http://') && !uri.startsWith('https://')) {
                   absUrl = new URL(uri, baseUrl).toString();
                 }
-                return `URI="/z-ext/?u=${encodeURIComponent(absUrl)}&z_ip=${spoofedIp}"`;
+                return `URI="/p-ext/?u=${encodeURIComponent(absUrl)}&p_ip=${spoofedIp}"`;
               } catch(e) {
                 return match;
               }
