@@ -121,6 +121,22 @@ export default {
       });
     }
 
+    // Health check endpoint for monitoring proxy status & routing health
+    if (url.pathname === '/p-health') {
+      return new Response(JSON.stringify({
+        status: 'ok',
+        service: 'pstream-discord-proxy',
+        timestamp: new Date().toISOString(),
+        routes: ROUTES.map(r => ({ origin: r.origin, prefixes: r.prefixes }))
+      }, null, 2), {
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+        },
+      });
+    }
+
     // Determine target origin and path
     let targetOrigin = 'https://pstream.cfd';
     let targetPathname = url.pathname;

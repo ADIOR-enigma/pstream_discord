@@ -39,3 +39,14 @@ Go to your application in the **Discord Developer Portal** ➔ **URL Mappings** 
 * **Target:** `pstream-discord-proxy.yourname.workers.dev`
 
 Once configured, launch your Discord Activity. All API and metadata calls from `pstream.cfd` will transparently route through your Cloudflare Worker and Discord's internal proxy tunnels without CSP failures!
+
+---
+
+## 3. Proxy Features & Endpoints
+
+* `/p-health`: Returns proxy health JSON status, active routes, and timestamp.
+* `/p-log`: Client log ingestion endpoint with rate-limiting.
+* Subtitle & Track support: Automatic CORS header injection (`Content-Type: text/vtt`) and `crossorigin="anonymous"` DOM enforcement.
+* Watch Party Sync: Micro-seek prevention, host drift spoofing, and autoplay policy recovery.
+* TMDB Fallback: Automatic mirror failover to `api.tmdb.org` on 5xx errors.
+
