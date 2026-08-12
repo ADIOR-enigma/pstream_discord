@@ -712,9 +712,34 @@
             function(_, q1, url, q2) { return 'url(' + q1 + rewriteUrl(url) + q2 + ')'; });
           if (newBg !== bg) node.style.backgroundImage = newBg;
         }
-        // Recurse into children
+
+        // ── Subtitle crossorigin fix ───────────────────────────────────────
+        // Browsers require crossorigin="anonymous" on the <video> element to
+        // load cross-origin <track> subtitles, even when CORS headers are correct.
+        // We set it here from both directions:
+        //   a) When a <track> is observed: set crossorigin on its parent <video>.
+        //   b) When a <video> is observed: set crossorigin if it has any <track> children.
+        const tagName = node.tagName && node.tagName.toLowerCase();
+        if (tagName === 'track') {
+          const parentVideo = node.parentNode;
+          if (parentVideo && parentVideo.tagName && parentVideo.tagName.toLowerCase() === 'video') {
+            if (!parentVideo.hasAttribute('crossorigin')) {
+              try { parentVideo.setAttribute('crossorigin', 'anonymous'); } catch(e) {}
+            }
+          }
+        } else if (tagName === 'video') {
+          // If this video has (or will have) track children, set crossorigin proactively
+          try {
+            const tracks = node.querySelectorAll('track');
+            if (tracks.length > 0 && !node.hasAttribute('crossorigin')) {
+              node.setAttribute('crossorigin', 'anonymous');
+            }
+          } catch(e) {}
+        }
+
+        // Recurse into children (includes track elements for crossorigin propagation)
         if (node.querySelectorAll) {
-          const imgs = node.querySelectorAll('[src], [poster], [style]');
+          const imgs = node.querySelectorAll('[src], [poster], [style], track');
           for (let i = 0; i < imgs.length; i++) rewriteNode(imgs[i]);
         }
       } catch(e) {}
@@ -737,7 +762,8 @@
             childList: true, 
             subtree: true, 
             attributes: true, 
-            attributeFilter: ['src', 'srcset', 'style', 'data-src', 'data-poster', 'poster'] 
+            // 'crossorigin' added so we catch external code setting it on <video>
+            attributeFilter: ['src', 'srcset', 'style', 'data-src', 'data-poster', 'poster', 'crossorigin'] 
           });
         } catch(e) {}
       }

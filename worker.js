@@ -247,6 +247,23 @@ export default {
     const isHtml = contentType.includes('text/html');
     const isJs   = contentType.includes('application/javascript') || contentType.includes('text/javascript');
 
+    // ── Subtitle Content-Type enforcement ──────────────────────────────────────
+    // Browsers silently ignore <track> elements if the server returns a wrong
+    // MIME type (e.g. application/octet-stream). We detect subtitle files by
+    // both the request path and the upstream content-type and force the correct
+    // header so the browser's VTT/SRT parser is invoked reliably.
+    const isVtt = targetPathname.endsWith('.vtt') || contentType.includes('text/vtt') || contentType.includes('text/webvtt');
+    const isSrt = targetPathname.endsWith('.srt');
+    if (isVtt) {
+      responseHeaders.set('Content-Type', 'text/vtt; charset=utf-8');
+      // Subtitles require a permissive CORS header — browsers refuse to load
+      // cross-origin VTT tracks without explicit Access-Control-Allow-Origin.
+      responseHeaders.set('Access-Control-Allow-Origin', originHeader);
+    } else if (isSrt) {
+      responseHeaders.set('Content-Type', 'text/plain; charset=utf-8');
+      responseHeaders.set('Access-Control-Allow-Origin', originHeader);
+    }
+
     const acceptHeader = request.headers.get('Accept') || '';
     const secFetchDest = (request.headers.get('Sec-Fetch-Dest') || request.headers.get('sec-fetch-dest') || '').toLowerCase();
     
@@ -317,6 +334,7 @@ export default {
           .on('iframe', new AttributeRewriter())
           .on('video', new AttributeRewriter())
           .on('source', new AttributeRewriter())
+          .on('track', new AttributeRewriter())  // subtitle <track src="..."> rewriting
           .on('form', new AttributeRewriter());
           
         return rewriter.transform(rwResponse);
