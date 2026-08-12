@@ -6,8 +6,27 @@
     globalThis.__PSTREAM_PATCH_VERSION__ = CURRENT_PATCH_VERSION;
     globalThis.__PSTREAM_PATCHED__ = true;
 
+    // ── Spoofed IP — session-persistent ────────────────────────────────────────
+    // The spoofed IP must be stable for the lifetime of a viewing session.
+    // Previously it was regenerated on every page load, which broke video CDN
+    // sessions that bind a stream token to the originating IP address.
+    //
+    // sessionStorage is the correct scope:
+    //   • Survives soft page reloads (F5) within the same tab — CDN session intact.
+    //   • Resets when the tab is closed — stale IPs don't linger across sessions.
+    //   • Each tab gets its own sessionStorage — concurrent tabs don't share IPs.
     if (!globalThis.__PSTREAM_SPOOF_IP) {
-      globalThis.__PSTREAM_SPOOF_IP = '73.' + (Math.floor(Math.random() * 156) + 100) + '.' + Math.floor(Math.random() * 255) + '.' + Math.floor(Math.random() * 255);
+      try {
+        const stored = sessionStorage.getItem('__pstream_spoof_ip');
+        if (stored && /^73\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(stored)) {
+          globalThis.__PSTREAM_SPOOF_IP = stored;
+        }
+      } catch(e) {}
+
+      if (!globalThis.__PSTREAM_SPOOF_IP) {
+        globalThis.__PSTREAM_SPOOF_IP = '73.' + (Math.floor(Math.random() * 156) + 100) + '.' + Math.floor(Math.random() * 255) + '.' + Math.floor(Math.random() * 255);
+        try { sessionStorage.setItem('__pstream_spoof_ip', globalThis.__PSTREAM_SPOOF_IP); } catch(e) {}
+      }
     }
 
     if (!globalThis.__PSTREAM_ORIGINALS__) {
@@ -244,12 +263,29 @@
           return p.then(async (response) => {
             if (response.ok && response.headers.get('content-type')?.includes('application/json')) {
               try {
-                const wpRaw = localStorage.getItem('watch-party-storage');
-                if (wpRaw) {
-                  const wpState = JSON.parse(wpRaw);
-                  if (wpState && wpState.state && wpState.state.isHost) {
-                    return response;
-                  }
+                // ── Fix 1: isHost cache ────────────────────────────────────────────
+                // Reading + JSON.parse-ing localStorage on every 2-second poll blocks
+                // the main thread. Cache the result keyed by room code; only re-read
+                // when the room changes or when the cache is cold.
+                const roomCode = u.match(/roomCode=([^&]+)/)?.[1] || '';
+                if (!window.__wpHostCache || window.__wpHostCache.room !== roomCode) {
+                  let isHost = false;
+                  try {
+                    const wpRaw = localStorage.getItem('watch-party-storage');
+                    if (wpRaw) {
+                      const wpState = JSON.parse(wpRaw);
+                      isHost = !!(wpState && wpState.state && wpState.state.isHost);
+                    }
+                  } catch(e) {}
+                  window.__wpHostCache = { room: roomCode, isHost, ts: Date.now() };
+                }
+                // Refresh the cache every 10 seconds in case host role changes mid-session
+                if (Date.now() - window.__wpHostCache.ts > 10000) {
+                  window.__wpHostCache = null;
+                  return response; // will re-read on next poll
+                }
+                if (window.__wpHostCache.isHost) {
+                  return response; // host — do not intercept
                 }
 
                 const cloned = response.clone();
@@ -257,6 +293,15 @@
                 const video = document.getElementById('video-element');
                 
                 if (video && data && data.users) {
+                  // ── Fix 2: Video element remount detection ─────────────────────
+                  // On SPA navigation the player unmounts and a new <video> is created.
+                  // If the element reference changed, __lastHostPlaying is stale —
+                  // reset it so play/pause detection starts fresh on the new element.
+                  if (window.__wpLastVideoEl && window.__wpLastVideoEl !== video) {
+                    window.__lastHostPlaying = undefined;
+                  }
+                  window.__wpLastVideoEl = video;
+
                   const myTime = video.currentTime;
                   for (const userId in data.users) {
                     const statuses = data.users[userId];
@@ -269,31 +314,56 @@
                       const predictedHostTime = hostIsPlaying ? latest.player.time + elapsed : latest.player.time;
                       
                       const diff = myTime - predictedHostTime;
+                      const absDiff = Math.abs(diff);
                       
                       if (hostIsPlaying) {
-                        const absDiff = Math.abs(diff);
-                        
                         if (absDiff <= 5) {
-                          // Gap is <= 5 seconds. Spoof host time to perfectly match guest time, 
-                          // and force P-Stream elapsed to 0 initially to prevent micro-seeks/buffering.
+                          // Gap is <= 5 seconds: spoof host time to guest time to prevent micro-seeks.
                           latest.player.time = myTime;
                           latest.timestamp = Date.now();
+                        } else {
+                          // ── Fix 4: Reset state on hard-seek ───────────────────
+                          // Host seeked > 5 sec away — P-Stream will do a native hard-seek.
+                          // Reset __lastHostPlaying so we don't miss a pause that immediately
+                          // follows the seek (the state machine would otherwise think it already
+                          // processed the current play state and skip the event).
+                          window.__lastHostPlaying = undefined;
                         }
-                        // If gap > 5 seconds, we do NOT spoof. This allows P-Stream to detect 
-                        // the massive drift and perform a native hard-seek (buffering jump).
+                        // If gap > 5 seconds, we do NOT spoof. P-Stream detects the
+                        // drift and performs a native hard-seek (buffering jump).
                       }
                       
                       // CRITICAL FIX: Bypass P-Stream's 250ms SEEK_SETTLE_MS delay and React render cycle.
                       if (window.__lastHostPlaying !== hostIsPlaying) {
-                          // Only manually override on Play if within threshold.
-                          if (hostIsPlaying) {
-                              if (Math.abs(diff) <= 5) {
-                                  video.play().catch(e => {});
+                        if (hostIsPlaying) {
+                          if (absDiff <= 5) {
+                            // ── Fix 3: Autoplay policy guard ──────────────────────
+                            // video.play() returns a Promise that rejects with NotAllowedError
+                            // when the browser's autoplay policy blocks it (no prior user gesture).
+                            // Silently swallowing this leaves the guest paused indefinitely.
+                            // Instead: on block, register a one-shot user-gesture listener so
+                            // playback resumes on the guest's next click or keypress.
+                            video.play().catch(function(playErr) {
+                              if (playErr && playErr.name === 'NotAllowedError') {
+                                if (!window.__wpPlayRetryBound) {
+                                  window.__wpPlayRetryBound = true;
+                                  function resumeOnGesture() {
+                                    window.__wpPlayRetryBound = false;
+                                    document.removeEventListener('click', resumeOnGesture, true);
+                                    document.removeEventListener('keydown', resumeOnGesture, true);
+                                    const v = document.getElementById('video-element');
+                                    if (v && v.paused) v.play().catch(function() {});
+                                  }
+                                  document.addEventListener('click', resumeOnGesture, { capture: true, once: true });
+                                  document.addEventListener('keydown', resumeOnGesture, { capture: true, once: true });
+                                }
                               }
-                          } else {
-                              video.pause();
+                            });
                           }
-                          window.__lastHostPlaying = hostIsPlaying;
+                        } else {
+                          video.pause();
+                        }
+                        window.__lastHostPlaying = hostIsPlaying;
                       }
                       
                       // Ensure we never use soft-sync (playback speed adjustments) anymore
@@ -315,8 +385,27 @@
           });
         }
         
-        p.then(res => { if (!res.ok) console.error('Fetch Failed:', u, res.status, res.statusText); })
-         .catch(err => { console.error('Fetch Error:', u, err.message); });
+        // ── Custom Proxy Error Dispatcher ──────────────────────────────────────────
+        function dispatchProxyError(type, url, status, message) {
+          try {
+            if (typeof window !== 'undefined' && window.dispatchEvent) {
+              window.dispatchEvent(new CustomEvent('pstream:proxy_error', {
+                detail: { type: type, url: url, status: status || 0, message: message || '' }
+              }));
+            }
+          } catch(e) {}
+        }
+
+        p.then(res => {
+          if (!res.ok) {
+            console.error('Fetch Failed:', u, res.status, res.statusText);
+            dispatchProxyError('fetch', u, res.status, res.statusText);
+          }
+        })
+        .catch(err => {
+          console.error('Fetch Error:', u, err.message);
+          dispatchProxyError('fetch', u, 0, err.message);
+        });
         return p;
       };
     }
@@ -329,10 +418,26 @@
         const rest = Array.prototype.slice.call(arguments, 2);
         const u = rewriteUrl(typeof url === 'string' ? url : (url ? url.toString() : url));
         this.addEventListener('load', function() {
-          if (this.status >= 400) console.error('XHR Failed:', u, this.status, this.statusText);
+          if (this.status >= 400) {
+            console.error('XHR Failed:', u, this.status, this.statusText);
+            try {
+              if (typeof window !== 'undefined' && window.dispatchEvent) {
+                window.dispatchEvent(new CustomEvent('pstream:proxy_error', {
+                  detail: { type: 'xhr', url: u, status: this.status, message: this.statusText }
+                }));
+              }
+            } catch(e) {}
+          }
         });
         this.addEventListener('error', function() {
           console.error('XHR Error:', u);
+          try {
+            if (typeof window !== 'undefined' && window.dispatchEvent) {
+              window.dispatchEvent(new CustomEvent('pstream:proxy_error', {
+                detail: { type: 'xhr', url: u, status: 0, message: 'XHR Error' }
+              }));
+            }
+          } catch(e) {}
         });
         return _open.apply(this, [method, u].concat(rest));
       };
@@ -662,6 +767,7 @@
       patchProp(window.HTMLImageElement  && window.HTMLImageElement.prototype,  'srcset');
       patchProp(window.HTMLSourceElement && window.HTMLSourceElement.prototype, 'src');
       patchProp(window.HTMLSourceElement && window.HTMLSourceElement.prototype, 'srcset');
+      patchProp(window.HTMLMediaElement  && window.HTMLMediaElement.prototype,  'src');
       patchProp(window.HTMLVideoElement  && window.HTMLVideoElement.prototype,  'src');
       patchProp(window.HTMLVideoElement  && window.HTMLVideoElement.prototype,  'poster');
       patchProp(window.HTMLTrackElement  && window.HTMLTrackElement.prototype,  'src');
@@ -676,8 +782,9 @@
       globalThis.Worker = function(scriptURL, options) {
         const urlStr = typeof scriptURL === 'string' ? scriptURL : (scriptURL && scriptURL.toString ? scriptURL.toString() : '');
         if (urlStr.startsWith('blob:')) {
-          // Force hls.js to fall back to main-thread processing so it gets patched by fetch/XHR interceptors
-          throw new Error('Blob workers are disabled to bypass CSP');
+          // Force HLS demuxing/transcoding workers to main thread so requests use intercepted fetch/XHR
+          console.warn('[PSTREAM INTERCEPTOR] Intercepted blob worker instantiation to bypass CSP and enforce main-thread proxying');
+          throw new Error('Blob workers are disabled to bypass CSP and force main-thread proxying');
         }
         return new _WorkerOriginal(scriptURL, options);
       };
@@ -712,9 +819,34 @@
             function(_, q1, url, q2) { return 'url(' + q1 + rewriteUrl(url) + q2 + ')'; });
           if (newBg !== bg) node.style.backgroundImage = newBg;
         }
-        // Recurse into children
+
+        // ── Subtitle crossorigin fix ───────────────────────────────────────
+        // Browsers require crossorigin="anonymous" on the <video> element to
+        // load cross-origin <track> subtitles, even when CORS headers are correct.
+        // We set it here from both directions:
+        //   a) When a <track> is observed: set crossorigin on its parent <video>.
+        //   b) When a <video> is observed: set crossorigin if it has any <track> children.
+        const tagName = node.tagName && node.tagName.toLowerCase();
+        if (tagName === 'track') {
+          const parentVideo = node.parentNode;
+          if (parentVideo && parentVideo.tagName && parentVideo.tagName.toLowerCase() === 'video') {
+            if (!parentVideo.hasAttribute('crossorigin')) {
+              try { parentVideo.setAttribute('crossorigin', 'anonymous'); } catch(e) {}
+            }
+          }
+        } else if (tagName === 'video') {
+          // If this video has (or will have) track children, set crossorigin proactively
+          try {
+            const tracks = node.querySelectorAll('track');
+            if (tracks.length > 0 && !node.hasAttribute('crossorigin')) {
+              node.setAttribute('crossorigin', 'anonymous');
+            }
+          } catch(e) {}
+        }
+
+        // Recurse into children (includes track elements for crossorigin propagation)
         if (node.querySelectorAll) {
-          const imgs = node.querySelectorAll('[src], [poster], [style]');
+          const imgs = node.querySelectorAll('[src], [poster], [style], track');
           for (let i = 0; i < imgs.length; i++) rewriteNode(imgs[i]);
         }
       } catch(e) {}
@@ -737,7 +869,8 @@
             childList: true, 
             subtree: true, 
             attributes: true, 
-            attributeFilter: ['src', 'srcset', 'style', 'data-src', 'data-poster', 'poster'] 
+            // 'crossorigin' added so we catch external code setting it on <video>
+            attributeFilter: ['src', 'srcset', 'style', 'data-src', 'data-poster', 'poster', 'crossorigin'] 
           });
         } catch(e) {}
       }

@@ -20,9 +20,9 @@ import RUNTIME_INTERCEPTOR from './interceptor.js';
 // ── Route table ───────────────────────────────────────────────────────────────
 
 const ROUTES = [
-  { prefixes: ['/p-tmdb/', '/p-tmdb', '/tmdb/', '/tmdb'],   origin: 'https://api.themoviedb.org', strip: /^\/(p-)?tmdb/ },
-  { prefixes: ['/p-image/', '/p-image', '/image-tmdb/', '/image-tmdb'], origin: 'https://image.tmdb.org',    strip: /^\/(p-image|image-tmdb)/ },
-  { prefixes: ['/p-sync/', '/p-sync', '/sync/', '/sync'],      origin: 'https://sync.pstream.cfd',     strip: /^\/(p-)?sync/ },
+  { prefixes: ['/p-tmdb/', '/p-tmdb', '/tmdb/', '/tmdb'], origin: 'https://api.themoviedb.org', strip: /^\/(p-)?tmdb/ },
+  { prefixes: ['/p-image/', '/p-image', '/image-tmdb/', '/image-tmdb'], origin: 'https://image.tmdb.org', strip: /^\/(p-image|image-tmdb)/ },
+  { prefixes: ['/p-sync/', '/p-sync', '/sync/', '/sync'], origin: 'https://sync.pstream.cfd', strip: /^\/(p-)?sync/ },
   { prefixes: ['/p-ava/', '/p-ava'], origin: 'https://ava.pstream.cfd', strip: /^\/p-ava/ },
   { prefixes: ['/p-ivi/', '/p-ivi'], origin: 'https://ivi.pstream.cfd', strip: /^\/p-ivi/ },
   { prefixes: ['/p-eve/', '/p-eve'], origin: 'https://eve.pstream.cfd', strip: /^\/p-eve/ },
@@ -43,11 +43,27 @@ export default {
     if (spoofedIp) {
       url.searchParams.delete('p_ip'); // Remove from search params so it doesn't leak upstream
     } else {
-      spoofedIp = '73.194.22.115'; // Fallback consistent IP if not provided
+      // No p_ip from interceptor — generate a random IP in the same 73.x.x.x range.
+      // A single hardcoded fallback would become a shared rate-limit/block target.
+      // A random per-request IP avoids that, at the cost of less CDN session affinity
+      // (acceptable since this path only fires when the interceptor failed to inject).
+      const r = () => Math.floor(Math.random() * 256);
+      spoofedIp = '73.' + (Math.floor(Math.random() * 156) + 100) + '.' + r() + '.' + r();
     }
 
     const originHeader = request.headers.get('Origin') || '*';
     const reqHeaders = request.headers.get('Access-Control-Request-Headers') || '*';
+
+    function makeErrorResponse(msg, status) {
+      return new Response(msg, {
+        status: status,
+        headers: {
+          'Access-Control-Allow-Origin': originHeader,
+          'Access-Control-Allow-Credentials': 'true',
+          'Content-Type': 'text/plain; charset=utf-8'
+        }
+      });
+    }
 
     // CORS preflight
     if (request.method === 'OPTIONS') {
@@ -63,19 +79,42 @@ export default {
       });
     }
 
-    // Client logger endpoint
+    // Client logger endpoint (with rate limiting per IP to prevent spam quota exhaustion)
     if (url.pathname === '/p-log') {
+      globalThis.__logRateLimitMap = globalThis.__logRateLimitMap || new Map();
+      const now = Date.now();
+      const clientKey = spoofedIp || 'unknown';
+      let record = globalThis.__logRateLimitMap.get(clientKey);
+      if (!record || now - record.start > 10000) {
+        record = { start: now, count: 0 };
+      }
+      record.count++;
+      globalThis.__logRateLimitMap.set(clientKey, record);
+
+      // Clean up old rate limit entries periodically if map grows large
+      if (globalThis.__logRateLimitMap.size > 500) {
+        for (const [k, v] of globalThis.__logRateLimitMap.entries()) {
+          if (now - v.start > 10000) globalThis.__logRateLimitMap.delete(k);
+        }
+      }
+
+      if (record.count > 30) {
+        return new Response('rate limited', { status: 429, headers: { 'Access-Control-Allow-Origin': '*' } });
+      }
+
       let logMsg = '';
       if (request.method === 'POST') {
         try {
           const body = await request.json();
           logMsg = body.log || '';
-        } catch(e) {
+        } catch (e) {
           logMsg = await request.text();
         }
       } else if (request.method === 'GET') {
         logMsg = url.searchParams.get('msg') || '';
       }
+
+      if (logMsg.length > 1000) logMsg = logMsg.substring(0, 1000) + '...';
       console.log('[CLIENT LOG]', logMsg);
       return new Response('ok', { headers: { 'Access-Control-Allow-Origin': '*' } });
     }
@@ -93,6 +132,22 @@ export default {
       });
     }
 
+    // Health check endpoint for monitoring proxy status & routing health
+    if (url.pathname === '/p-health') {
+      return new Response(JSON.stringify({
+        status: 'ok',
+        service: 'pstream-discord-proxy',
+        timestamp: new Date().toISOString(),
+        routes: ROUTES.map(r => ({ origin: r.origin, prefixes: r.prefixes }))
+      }, null, 2), {
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+        },
+      });
+    }
+
     // Determine target origin and path
     let targetOrigin = 'https://pstream.cfd';
     let targetPathname = url.pathname;
@@ -101,7 +156,7 @@ export default {
 
     if (url.pathname.startsWith('/p-ext/')) {
       let extUrlStr = url.searchParams.get('u');
-      
+
       if (!extUrlStr) {
         // Try parsing from base64 path: /p-ext/<b64>/<relative>
         const parts = url.pathname.split('/');
@@ -119,7 +174,7 @@ export default {
               const relativePath = parts.slice(3).join('/') + url.search;
               extUrlStr = new URL(relativePath, decodedBase).toString();
             }
-          } catch(e) {}
+          } catch (e) { }
         }
       }
 
@@ -142,7 +197,7 @@ export default {
               const relativePath = url.pathname.replace(/^\/p-ext\/?/, '') + url.search;
               extUrlStr = new URL(relativePath, refU).toString();
             }
-          } catch(e) {}
+          } catch (e) { }
         }
       }
 
@@ -152,10 +207,10 @@ export default {
           targetOrigin = targetUrl.origin;
           targetPathname = targetUrl.pathname;
         } catch (e) {
-          return new Response('Invalid p-ext URL', { status: 400 });
+          return makeErrorResponse('Invalid p-ext URL', 400);
         }
       } else {
-        return new Response('Missing target parameter or invalid path', { status: 400 });
+        return makeErrorResponse('Missing target parameter or invalid path', 400);
       }
     } else {
       for (const route of ROUTES) {
@@ -180,17 +235,17 @@ export default {
     for (const [key, value] of request.headers.entries()) {
       const lower = key.toLowerCase();
       if (lower.startsWith('cf-') || lower === 'host' || lower === 'origin' ||
-          lower === 'referer' ||
-          lower === 'if-none-match' || lower === 'if-modified-since' || lower === 'if-range' ||
-          lower.startsWith('x-forwarded') || lower.startsWith('sec-')) {
+        lower === 'referer' || lower === 'cookie' ||
+        lower === 'if-none-match' || lower === 'if-modified-since' || lower === 'if-range' ||
+        lower.startsWith('x-forwarded') || lower.startsWith('sec-')) {
         continue;
       }
       cleanHeaders.set(key, value);
     }
     // Always spoof Origin and Referer to the main domain so upstream doesn't block hotlinking.
-      cleanHeaders.set('Origin', 'https://pstream.cfd');
-      cleanHeaders.set('Referer', 'https://pstream.cfd/');
-    
+    cleanHeaders.set('Origin', 'https://pstream.cfd');
+    cleanHeaders.set('Referer', 'https://pstream.cfd/');
+
     let ua = request.headers.get('User-Agent') || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
     ua = ua.replace(/Discord[\w.-]*\/\d+[\.\d]*\s*/g, '');
     cleanHeaders.set('User-Agent', ua);
@@ -203,7 +258,7 @@ export default {
     cleanHeaders.set('X-Client-IP', spoofedIp);
     cleanHeaders.set('Forwarded', `for=${spoofedIp}`);
 
-    // Upstream fetch with TMDB fallback on 5xx
+    // Single upstream fetch (generic, no retry logic here)
     async function upstreamFetch(origin, pathname) {
       let fetchUrl;
       if (url.pathname.startsWith('/p-ext/')) {
@@ -219,11 +274,48 @@ export default {
       });
     }
 
+    // ── TMDB 5xx fallback ──────────────────────────────────────────────────────
+    // api.themoviedb.org and api.tmdb.org are mirrors of each other.
+    // When themoviedb.org returns a 5xx error (or a network-level failure occurs),
+    // we retry once against api.tmdb.org with the identical path and query string.
+    //
+    // Rules:
+    //   • Only fires for /p-tmdb/* routes (targetOrigin === themoviedb.org).
+    //   • Only retries GET/HEAD — non-idempotent methods must never be doubled.
+    //   • On network failure (catch), the fallback also triggers.
+    //   • The fallback result is used as-is; if it also fails we surface that error.
+    const isTmdbRoute = targetOrigin === 'https://api.themoviedb.org';
+    const isIdempotent = request.method === 'GET' || request.method === 'HEAD';
+
     let response;
     try {
       response = await upstreamFetch(targetOrigin, targetPathname);
+
+      if (isTmdbRoute && isIdempotent && response.status >= 500) {
+        console.log(`[TMDB FALLBACK] Primary ${targetOrigin} returned ${response.status} — retrying via api.tmdb.org`);
+        try {
+          const fallbackResponse = await upstreamFetch('https://api.tmdb.org', targetPathname);
+          // Only use the fallback if it actually improved things
+          if (fallbackResponse.status < response.status || fallbackResponse.ok) {
+            response = fallbackResponse;
+          }
+        } catch (fallbackErr) {
+          console.log(`[TMDB FALLBACK] Fallback also failed: ${fallbackErr.message} — using original ${response.status} response`);
+          // Keep the original response; we already have it
+        }
+      }
     } catch (err) {
-      return new Response(`Proxy upstream error: ${err.message}`, { status: 502 });
+      // Primary fetch threw a network error. If this is a TMDB GET, try the mirror.
+      if (isTmdbRoute && isIdempotent) {
+        console.log(`[TMDB FALLBACK] Primary fetch threw: ${err.message} — retrying via api.tmdb.org`);
+        try {
+          response = await upstreamFetch('https://api.tmdb.org', targetPathname);
+        } catch (fallbackErr) {
+          return makeErrorResponse(`Proxy upstream error (both TMDB hosts failed): ${err.message} / ${fallbackErr.message}`, 502);
+        }
+      } else {
+        return makeErrorResponse(`Proxy upstream error: ${err.message}`, 502);
+      }
     }
 
     // Build response headers
@@ -245,11 +337,28 @@ export default {
 
     const contentType = response.headers.get('content-type') || '';
     const isHtml = contentType.includes('text/html');
-    const isJs   = contentType.includes('application/javascript') || contentType.includes('text/javascript');
+    const isJs = contentType.includes('application/javascript') || contentType.includes('text/javascript');
+
+    // ── Subtitle Content-Type enforcement ──────────────────────────────────────
+    // Browsers silently ignore <track> elements if the server returns a wrong
+    // MIME type (e.g. application/octet-stream). We detect subtitle files by
+    // both the request path and the upstream content-type and force the correct
+    // header so the browser's VTT/SRT parser is invoked reliably.
+    const isVtt = targetPathname.endsWith('.vtt') || contentType.includes('text/vtt') || contentType.includes('text/webvtt');
+    const isSrt = targetPathname.endsWith('.srt');
+    if (isVtt) {
+      responseHeaders.set('Content-Type', 'text/vtt; charset=utf-8');
+      // Subtitles require a permissive CORS header — browsers refuse to load
+      // cross-origin VTT tracks without explicit Access-Control-Allow-Origin.
+      responseHeaders.set('Access-Control-Allow-Origin', originHeader);
+    } else if (isSrt) {
+      responseHeaders.set('Content-Type', 'text/plain; charset=utf-8');
+      responseHeaders.set('Access-Control-Allow-Origin', originHeader);
+    }
 
     const acceptHeader = request.headers.get('Accept') || '';
     const secFetchDest = (request.headers.get('Sec-Fetch-Dest') || request.headers.get('sec-fetch-dest') || '').toLowerCase();
-    
+
     let isNavigation = false;
     if (secFetchDest === 'document' || secFetchDest === 'iframe') {
       isNavigation = true;
@@ -267,26 +376,24 @@ export default {
       responseHeaders.delete('Last-Modified');
       responseHeaders.set('Cache-Control', 'no-cache, no-store, must-revalidate');
 
-      if (isHtml) {
-        // Strip SRI integrity attrs (our JS injection invalidates them)
-        text = text.replace(/\s*integrity=["'][^"']*["']/gi, '');
+      // Strip SRI integrity attrs (our JS injection invalidates them)
+      text = text.replace(/\s*integrity=["'][^"']*["']/gi, '');
 
-        // Extract existing CSP nonce so our injected <script> isn't blocked
-        // Discord's embed proxy sets:  script-src 'self' 'unsafe-eval' 'nonce-XXXX' blob:
-        // Our script MUST carry that nonce or it will be rejected.
-        let nonce = '';
-        const nonceMatch = text.match(/\bnonce="([^"]+)"/i) || text.match(/\bnonce='([^']+)'/i);
-        if (nonceMatch) nonce = nonceMatch[1];
+      // Extract existing CSP nonce so our injected <script> isn't blocked.
+      // Discord's embed proxy sets:  script-src 'self' 'unsafe-eval' 'nonce-XXXX' blob:
+      // Our script MUST carry that nonce or it will be rejected.
+      let nonce = '';
+      const nonceMatch = text.match(/\bnonce="([^"]+)"/i) || text.match(/\bnonce='([^']+)'/i);
+      if (nonceMatch) nonce = nonceMatch[1];
 
-        const nonceAttr = nonce ? ` nonce="${nonce}"` : '';
-        const dataNonceAttr = nonce ? ` data-proxy-nonce="${nonce}"` : '';
-        const scriptTag = `<script src="/p-interceptor.js"${nonceAttr}${dataNonceAttr}></script>`;
+      const nonceAttr = nonce ? ` nonce="${nonce}"` : '';
+      const dataNonceAttr = nonce ? ` data-proxy-nonce="${nonce}"` : '';
+      const scriptTag = `<script src="/p-interceptor.js"${nonceAttr}${dataNonceAttr}></script>`;
 
-        if (/<head[^>]*>/i.test(text)) {
-          text = text.replace(/(<head[^>]*>)/i, `$1\n${scriptTag}`);
-        } else {
-          text = scriptTag + text;
-        }
+      if (/<head[^>]*>/i.test(text)) {
+        text = text.replace(/(<head[^>]*>)/i, `$1\n${scriptTag}`);
+      } else {
+        text = scriptTag + text;
       }
       // NOTE: We intentionally do NOT inject into JS files.
       // The <head> injection above runs first and patches fetch/XHR/URL
@@ -303,12 +410,12 @@ export default {
                 try {
                   const absUrl = new URL(val, baseUrl).toString();
                   el.setAttribute(attr, '/p-ext/?u=' + encodeURIComponent(absUrl) + (spoofedIp ? '&p_ip=' + spoofedIp : ''));
-                } catch(e) {}
+                } catch (e) { }
               }
             }
           }
         }
-        
+
         let rwResponse = new Response(text, { status: response.status, statusText: response.statusText, headers: responseHeaders });
         const rewriter = new HTMLRewriter()
           .on('script', new AttributeRewriter())
@@ -317,8 +424,9 @@ export default {
           .on('iframe', new AttributeRewriter())
           .on('video', new AttributeRewriter())
           .on('source', new AttributeRewriter())
+          .on('track', new AttributeRewriter())  // subtitle <track src="..."> rewriting
           .on('form', new AttributeRewriter());
-          
+
         return rewriter.transform(rwResponse);
       }
 
@@ -346,21 +454,22 @@ export default {
             }
             let encodedU = btoa(unescape(encodeURIComponent(absUrl))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
             return '/p-ext/' + encodedU + '/?p_ip=' + spoofedIp;
-          } catch(e) {
+          } catch (e) {
             return line;
           }
         }
-        // Also rewrite URIs inside tags like #EXT-X-KEY:METHOD=AES-128,URI="key.bin"
+        // Also rewrite URIs inside tags like #EXT-X-KEY, #EXT-X-MAP, #EXT-X-MEDIA (e.g. URI="key.bin")
         if (trimmed.startsWith('#EXT-X-') && trimmed.includes('URI="')) {
-          return line.replace(/URI="([^"]+)"/, (match, uri) => {
+          return line.replace(/URI="([^"]+)"/g, (match, uri) => {
             if (!uri.startsWith('data:')) {
               try {
                 let absUrl = uri;
                 if (!uri.startsWith('http://') && !uri.startsWith('https://')) {
                   absUrl = new URL(uri, baseUrl).toString();
                 }
-                return `URI="/p-ext/?u=${encodeURIComponent(absUrl)}&p_ip=${spoofedIp}"`;
-              } catch(e) {
+                let encodedU = btoa(unescape(encodeURIComponent(absUrl))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+                return `URI="/p-ext/${encodedU}/?p_ip=${spoofedIp}"`;
+              } catch (e) {
                 return match;
               }
             }
@@ -369,7 +478,7 @@ export default {
         }
         return line;
       }).join('\n');
-      
+
       responseHeaders.delete('Content-Length');
       return new Response(text, {
         status: response.status,
