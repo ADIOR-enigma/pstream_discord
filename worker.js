@@ -246,6 +246,23 @@ export default {
     cleanHeaders.set('Origin', 'https://pstream.cfd');
     cleanHeaders.set('Referer', 'https://pstream.cfd/');
 
+    // Force Accept-Language to en-US for TMDB and pstream microservice routes.
+    // Discord desktop (Electron) may report navigator.language as 'ur' (Urdu) or another
+    // non-English locale. pstream.cfd forwards the browser locale as TMDB's `language` param,
+    // causing zero search results on non-English locales ("Failed to find media").
+    // Normalizing to en-US here ensures TMDB always returns English metadata/results.
+    const isTmdbOrMicroservice = (
+      targetOrigin === 'https://api.themoviedb.org' ||
+      targetOrigin === 'https://api.tmdb.org' ||
+      targetOrigin === 'https://ava.pstream.cfd' ||
+      targetOrigin === 'https://ivi.pstream.cfd' ||
+      targetOrigin === 'https://eve.pstream.cfd' ||
+      targetOrigin === 'https://image.tmdb.org'
+    );
+    if (isTmdbOrMicroservice) {
+      cleanHeaders.set('Accept-Language', 'en-US,en;q=0.9');
+    }
+
     let ua = request.headers.get('User-Agent') || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
     ua = ua.replace(/Discord[\w.-]*\/\d+[\.\d]*\s*/g, '');
     cleanHeaders.set('User-Agent', ua);

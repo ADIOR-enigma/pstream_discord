@@ -401,6 +401,24 @@
             console.error('Fetch Failed:', u, res.status, res.statusText);
             dispatchProxyError('fetch', u, res.status, res.statusText);
           }
+          // ── IP rotation on TMDB rate-limit ─────────────────────────────────────
+          // When TMDB returns 429 the worker retries against api.tmdb.org and injects
+          // X-Pstream-Rotate-IP: 1 so we know to clear the cached spoofed IP.
+          // Without this, the rate-limited IP is sticky in sessionStorage for the
+          // whole tab session, causing "Failed to find media" for every subsequent search.
+          if (res.headers && res.headers.get('x-pstream-rotate-ip') === '1') {
+            try {
+              console.log('[PStream] TMDB rate-limit hit — rotating spoofed IP');
+              sessionStorage.removeItem('__pstream_spoof_ip');
+              delete globalThis.__PSTREAM_SPOOF_IP;
+              // Generate a fresh IP immediately so the next request has one ready
+              const newIp = '73.' + (Math.floor(Math.random() * 156) + 100) + '.' +
+                            Math.floor(Math.random() * 255) + '.' +
+                            Math.floor(Math.random() * 255);
+              globalThis.__PSTREAM_SPOOF_IP = newIp;
+              try { sessionStorage.setItem('__pstream_spoof_ip', newIp); } catch(e) {}
+            } catch(e) {}
+          }
         })
         .catch(err => {
           console.error('Fetch Error:', u, err.message);
