@@ -68,8 +68,29 @@ export default {
       });
     }
 
-    // Client logger endpoint
+    // Client logger endpoint (with rate limiting per IP to prevent spam quota exhaustion)
     if (url.pathname === '/p-log') {
+      globalThis.__logRateLimitMap = globalThis.__logRateLimitMap || new Map();
+      const now = Date.now();
+      const clientKey = spoofedIp || 'unknown';
+      let record = globalThis.__logRateLimitMap.get(clientKey);
+      if (!record || now - record.start > 10000) {
+        record = { start: now, count: 0 };
+      }
+      record.count++;
+      globalThis.__logRateLimitMap.set(clientKey, record);
+
+      // Clean up old rate limit entries periodically if map grows large
+      if (globalThis.__logRateLimitMap.size > 500) {
+        for (const [k, v] of globalThis.__logRateLimitMap.entries()) {
+          if (now - v.start > 10000) globalThis.__logRateLimitMap.delete(k);
+        }
+      }
+
+      if (record.count > 30) {
+        return new Response('rate limited', { status: 429, headers: { 'Access-Control-Allow-Origin': '*' } });
+      }
+
       let logMsg = '';
       if (request.method === 'POST') {
         try {
@@ -81,6 +102,8 @@ export default {
       } else if (request.method === 'GET') {
         logMsg = url.searchParams.get('msg') || '';
       }
+
+      if (logMsg.length > 1000) logMsg = logMsg.substring(0, 1000) + '...';
       console.log('[CLIENT LOG]', logMsg);
       return new Response('ok', { headers: { 'Access-Control-Allow-Origin': '*' } });
     }
@@ -408,16 +431,17 @@ export default {
             return line;
           }
         }
-        // Also rewrite URIs inside tags like #EXT-X-KEY:METHOD=AES-128,URI="key.bin"
+        // Also rewrite URIs inside tags like #EXT-X-KEY, #EXT-X-MAP, #EXT-X-MEDIA (e.g. URI="key.bin")
         if (trimmed.startsWith('#EXT-X-') && trimmed.includes('URI="')) {
-          return line.replace(/URI="([^"]+)"/, (match, uri) => {
+          return line.replace(/URI="([^"]+)"/g, (match, uri) => {
             if (!uri.startsWith('data:')) {
               try {
                 let absUrl = uri;
                 if (!uri.startsWith('http://') && !uri.startsWith('https://')) {
                   absUrl = new URL(uri, baseUrl).toString();
                 }
-                return `URI="/p-ext/?u=${encodeURIComponent(absUrl)}&p_ip=${spoofedIp}"`;
+                let encodedU = btoa(unescape(encodeURIComponent(absUrl))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+                return `URI="/p-ext/${encodedU}/?p_ip=${spoofedIp}"`;
               } catch(e) {
                 return match;
               }
