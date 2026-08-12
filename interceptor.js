@@ -767,6 +767,7 @@
       patchProp(window.HTMLImageElement  && window.HTMLImageElement.prototype,  'srcset');
       patchProp(window.HTMLSourceElement && window.HTMLSourceElement.prototype, 'src');
       patchProp(window.HTMLSourceElement && window.HTMLSourceElement.prototype, 'srcset');
+      patchProp(window.HTMLMediaElement  && window.HTMLMediaElement.prototype,  'src');
       patchProp(window.HTMLVideoElement  && window.HTMLVideoElement.prototype,  'src');
       patchProp(window.HTMLVideoElement  && window.HTMLVideoElement.prototype,  'poster');
       patchProp(window.HTMLTrackElement  && window.HTMLTrackElement.prototype,  'src');
@@ -781,8 +782,9 @@
       globalThis.Worker = function(scriptURL, options) {
         const urlStr = typeof scriptURL === 'string' ? scriptURL : (scriptURL && scriptURL.toString ? scriptURL.toString() : '');
         if (urlStr.startsWith('blob:')) {
-          // Force hls.js to fall back to main-thread processing so it gets patched by fetch/XHR interceptors
-          throw new Error('Blob workers are disabled to bypass CSP');
+          // Force HLS demuxing/transcoding workers to main thread so requests use intercepted fetch/XHR
+          console.warn('[PSTREAM INTERCEPTOR] Intercepted blob worker instantiation to bypass CSP and enforce main-thread proxying');
+          throw new Error('Blob workers are disabled to bypass CSP and force main-thread proxying');
         }
         return new _WorkerOriginal(scriptURL, options);
       };
