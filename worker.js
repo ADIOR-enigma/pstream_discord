@@ -20,9 +20,9 @@ import RUNTIME_INTERCEPTOR from './interceptor.js';
 // ── Route table ───────────────────────────────────────────────────────────────
 
 const ROUTES = [
-  { prefixes: ['/p-tmdb/', '/p-tmdb', '/tmdb/', '/tmdb'],   origin: 'https://api.themoviedb.org', strip: /^\/(p-)?tmdb/ },
-  { prefixes: ['/p-image/', '/p-image', '/image-tmdb/', '/image-tmdb'], origin: 'https://image.tmdb.org',    strip: /^\/(p-image|image-tmdb)/ },
-  { prefixes: ['/p-sync/', '/p-sync', '/sync/', '/sync'],      origin: 'https://sync.pstream.cfd',     strip: /^\/(p-)?sync/ },
+  { prefixes: ['/p-tmdb/', '/p-tmdb', '/tmdb/', '/tmdb'], origin: 'https://api.themoviedb.org', strip: /^\/(p-)?tmdb/ },
+  { prefixes: ['/p-image/', '/p-image', '/image-tmdb/', '/image-tmdb'], origin: 'https://image.tmdb.org', strip: /^\/(p-image|image-tmdb)/ },
+  { prefixes: ['/p-sync/', '/p-sync', '/sync/', '/sync'], origin: 'https://sync.pstream.cfd', strip: /^\/(p-)?sync/ },
   { prefixes: ['/p-ava/', '/p-ava'], origin: 'https://ava.pstream.cfd', strip: /^\/p-ava/ },
   { prefixes: ['/p-ivi/', '/p-ivi'], origin: 'https://ivi.pstream.cfd', strip: /^\/p-ivi/ },
   { prefixes: ['/p-eve/', '/p-eve'], origin: 'https://eve.pstream.cfd', strip: /^\/p-eve/ },
@@ -53,6 +53,17 @@ export default {
 
     const originHeader = request.headers.get('Origin') || '*';
     const reqHeaders = request.headers.get('Access-Control-Request-Headers') || '*';
+
+    function makeErrorResponse(msg, status) {
+      return new Response(msg, {
+        status: status,
+        headers: {
+          'Access-Control-Allow-Origin': originHeader,
+          'Access-Control-Allow-Credentials': 'true',
+          'Content-Type': 'text/plain; charset=utf-8'
+        }
+      });
+    }
 
     // CORS preflight
     if (request.method === 'OPTIONS') {
@@ -96,7 +107,7 @@ export default {
         try {
           const body = await request.json();
           logMsg = body.log || '';
-        } catch(e) {
+        } catch (e) {
           logMsg = await request.text();
         }
       } else if (request.method === 'GET') {
@@ -145,7 +156,7 @@ export default {
 
     if (url.pathname.startsWith('/p-ext/')) {
       let extUrlStr = url.searchParams.get('u');
-      
+
       if (!extUrlStr) {
         // Try parsing from base64 path: /p-ext/<b64>/<relative>
         const parts = url.pathname.split('/');
@@ -163,7 +174,7 @@ export default {
               const relativePath = parts.slice(3).join('/') + url.search;
               extUrlStr = new URL(relativePath, decodedBase).toString();
             }
-          } catch(e) {}
+          } catch (e) { }
         }
       }
 
@@ -186,7 +197,7 @@ export default {
               const relativePath = url.pathname.replace(/^\/p-ext\/?/, '') + url.search;
               extUrlStr = new URL(relativePath, refU).toString();
             }
-          } catch(e) {}
+          } catch (e) { }
         }
       }
 
@@ -196,10 +207,10 @@ export default {
           targetOrigin = targetUrl.origin;
           targetPathname = targetUrl.pathname;
         } catch (e) {
-          return new Response('Invalid p-ext URL', { status: 400 });
+          return makeErrorResponse('Invalid p-ext URL', 400);
         }
       } else {
-        return new Response('Missing target parameter or invalid path', { status: 400 });
+        return makeErrorResponse('Missing target parameter or invalid path', 400);
       }
     } else {
       for (const route of ROUTES) {
@@ -224,17 +235,17 @@ export default {
     for (const [key, value] of request.headers.entries()) {
       const lower = key.toLowerCase();
       if (lower.startsWith('cf-') || lower === 'host' || lower === 'origin' ||
-          lower === 'referer' || lower === 'cookie' ||
-          lower === 'if-none-match' || lower === 'if-modified-since' || lower === 'if-range' ||
-          lower.startsWith('x-forwarded') || lower.startsWith('sec-')) {
+        lower === 'referer' || lower === 'cookie' ||
+        lower === 'if-none-match' || lower === 'if-modified-since' || lower === 'if-range' ||
+        lower.startsWith('x-forwarded') || lower.startsWith('sec-')) {
         continue;
       }
       cleanHeaders.set(key, value);
     }
     // Always spoof Origin and Referer to the main domain so upstream doesn't block hotlinking.
-      cleanHeaders.set('Origin', 'https://pstream.cfd');
-      cleanHeaders.set('Referer', 'https://pstream.cfd/');
-    
+    cleanHeaders.set('Origin', 'https://pstream.cfd');
+    cleanHeaders.set('Referer', 'https://pstream.cfd/');
+
     let ua = request.headers.get('User-Agent') || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
     ua = ua.replace(/Discord[\w.-]*\/\d+[\.\d]*\s*/g, '');
     cleanHeaders.set('User-Agent', ua);
@@ -300,10 +311,10 @@ export default {
         try {
           response = await upstreamFetch('https://api.tmdb.org', targetPathname);
         } catch (fallbackErr) {
-          return new Response(`Proxy upstream error (both TMDB hosts failed): ${err.message} / ${fallbackErr.message}`, { status: 502 });
+          return makeErrorResponse(`Proxy upstream error (both TMDB hosts failed): ${err.message} / ${fallbackErr.message}`, 502);
         }
       } else {
-        return new Response(`Proxy upstream error: ${err.message}`, { status: 502 });
+        return makeErrorResponse(`Proxy upstream error: ${err.message}`, 502);
       }
     }
 
@@ -326,7 +337,7 @@ export default {
 
     const contentType = response.headers.get('content-type') || '';
     const isHtml = contentType.includes('text/html');
-    const isJs   = contentType.includes('application/javascript') || contentType.includes('text/javascript');
+    const isJs = contentType.includes('application/javascript') || contentType.includes('text/javascript');
 
     // ── Subtitle Content-Type enforcement ──────────────────────────────────────
     // Browsers silently ignore <track> elements if the server returns a wrong
@@ -347,7 +358,7 @@ export default {
 
     const acceptHeader = request.headers.get('Accept') || '';
     const secFetchDest = (request.headers.get('Sec-Fetch-Dest') || request.headers.get('sec-fetch-dest') || '').toLowerCase();
-    
+
     let isNavigation = false;
     if (secFetchDest === 'document' || secFetchDest === 'iframe') {
       isNavigation = true;
@@ -399,12 +410,12 @@ export default {
                 try {
                   const absUrl = new URL(val, baseUrl).toString();
                   el.setAttribute(attr, '/p-ext/?u=' + encodeURIComponent(absUrl) + (spoofedIp ? '&p_ip=' + spoofedIp : ''));
-                } catch(e) {}
+                } catch (e) { }
               }
             }
           }
         }
-        
+
         let rwResponse = new Response(text, { status: response.status, statusText: response.statusText, headers: responseHeaders });
         const rewriter = new HTMLRewriter()
           .on('script', new AttributeRewriter())
@@ -415,7 +426,7 @@ export default {
           .on('source', new AttributeRewriter())
           .on('track', new AttributeRewriter())  // subtitle <track src="..."> rewriting
           .on('form', new AttributeRewriter());
-          
+
         return rewriter.transform(rwResponse);
       }
 
@@ -443,7 +454,7 @@ export default {
             }
             let encodedU = btoa(unescape(encodeURIComponent(absUrl))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
             return '/p-ext/' + encodedU + '/?p_ip=' + spoofedIp;
-          } catch(e) {
+          } catch (e) {
             return line;
           }
         }
@@ -458,7 +469,7 @@ export default {
                 }
                 let encodedU = btoa(unescape(encodeURIComponent(absUrl))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
                 return `URI="/p-ext/${encodedU}/?p_ip=${spoofedIp}"`;
-              } catch(e) {
+              } catch (e) {
                 return match;
               }
             }
@@ -467,7 +478,7 @@ export default {
         }
         return line;
       }).join('\n');
-      
+
       responseHeaders.delete('Content-Length');
       return new Response(text, {
         status: response.status,
