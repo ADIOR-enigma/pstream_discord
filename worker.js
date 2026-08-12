@@ -203,7 +203,7 @@ export default {
     cleanHeaders.set('X-Client-IP', spoofedIp);
     cleanHeaders.set('Forwarded', `for=${spoofedIp}`);
 
-    // Upstream fetch with TMDB fallback on 5xx
+    // Single upstream fetch (generic, no retry logic here)
     async function upstreamFetch(origin, pathname) {
       let fetchUrl;
       if (url.pathname.startsWith('/p-ext/')) {
@@ -219,11 +219,48 @@ export default {
       });
     }
 
+    // ── TMDB 5xx fallback ──────────────────────────────────────────────────────
+    // api.themoviedb.org and api.tmdb.org are mirrors of each other.
+    // When themoviedb.org returns a 5xx error (or a network-level failure occurs),
+    // we retry once against api.tmdb.org with the identical path and query string.
+    //
+    // Rules:
+    //   • Only fires for /p-tmdb/* routes (targetOrigin === themoviedb.org).
+    //   • Only retries GET/HEAD — non-idempotent methods must never be doubled.
+    //   • On network failure (catch), the fallback also triggers.
+    //   • The fallback result is used as-is; if it also fails we surface that error.
+    const isTmdbRoute = targetOrigin === 'https://api.themoviedb.org';
+    const isIdempotent = request.method === 'GET' || request.method === 'HEAD';
+
     let response;
     try {
       response = await upstreamFetch(targetOrigin, targetPathname);
+
+      if (isTmdbRoute && isIdempotent && response.status >= 500) {
+        console.log(`[TMDB FALLBACK] Primary ${targetOrigin} returned ${response.status} — retrying via api.tmdb.org`);
+        try {
+          const fallbackResponse = await upstreamFetch('https://api.tmdb.org', targetPathname);
+          // Only use the fallback if it actually improved things
+          if (fallbackResponse.status < response.status || fallbackResponse.ok) {
+            response = fallbackResponse;
+          }
+        } catch (fallbackErr) {
+          console.log(`[TMDB FALLBACK] Fallback also failed: ${fallbackErr.message} — using original ${response.status} response`);
+          // Keep the original response; we already have it
+        }
+      }
     } catch (err) {
-      return new Response(`Proxy upstream error: ${err.message}`, { status: 502 });
+      // Primary fetch threw a network error. If this is a TMDB GET, try the mirror.
+      if (isTmdbRoute && isIdempotent) {
+        console.log(`[TMDB FALLBACK] Primary fetch threw: ${err.message} — retrying via api.tmdb.org`);
+        try {
+          response = await upstreamFetch('https://api.tmdb.org', targetPathname);
+        } catch (fallbackErr) {
+          return new Response(`Proxy upstream error (both TMDB hosts failed): ${err.message} / ${fallbackErr.message}`, { status: 502 });
+        }
+      } else {
+        return new Response(`Proxy upstream error: ${err.message}`, { status: 502 });
+      }
     }
 
     // Build response headers
