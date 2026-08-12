@@ -43,7 +43,12 @@ export default {
     if (spoofedIp) {
       url.searchParams.delete('p_ip'); // Remove from search params so it doesn't leak upstream
     } else {
-      spoofedIp = '73.194.22.115'; // Fallback consistent IP if not provided
+      // No p_ip from interceptor — generate a random IP in the same 73.x.x.x range.
+      // A single hardcoded fallback would become a shared rate-limit/block target.
+      // A random per-request IP avoids that, at the cost of less CDN session affinity
+      // (acceptable since this path only fires when the interceptor failed to inject).
+      const r = () => Math.floor(Math.random() * 256);
+      spoofedIp = '73.' + (Math.floor(Math.random() * 156) + 100) + '.' + r() + '.' + r();
     }
 
     const originHeader = request.headers.get('Origin') || '*';

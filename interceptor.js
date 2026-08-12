@@ -6,8 +6,27 @@
     globalThis.__PSTREAM_PATCH_VERSION__ = CURRENT_PATCH_VERSION;
     globalThis.__PSTREAM_PATCHED__ = true;
 
+    // ── Spoofed IP — session-persistent ────────────────────────────────────────
+    // The spoofed IP must be stable for the lifetime of a viewing session.
+    // Previously it was regenerated on every page load, which broke video CDN
+    // sessions that bind a stream token to the originating IP address.
+    //
+    // sessionStorage is the correct scope:
+    //   • Survives soft page reloads (F5) within the same tab — CDN session intact.
+    //   • Resets when the tab is closed — stale IPs don't linger across sessions.
+    //   • Each tab gets its own sessionStorage — concurrent tabs don't share IPs.
     if (!globalThis.__PSTREAM_SPOOF_IP) {
-      globalThis.__PSTREAM_SPOOF_IP = '73.' + (Math.floor(Math.random() * 156) + 100) + '.' + Math.floor(Math.random() * 255) + '.' + Math.floor(Math.random() * 255);
+      try {
+        const stored = sessionStorage.getItem('__pstream_spoof_ip');
+        if (stored && /^73\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(stored)) {
+          globalThis.__PSTREAM_SPOOF_IP = stored;
+        }
+      } catch(e) {}
+
+      if (!globalThis.__PSTREAM_SPOOF_IP) {
+        globalThis.__PSTREAM_SPOOF_IP = '73.' + (Math.floor(Math.random() * 156) + 100) + '.' + Math.floor(Math.random() * 255) + '.' + Math.floor(Math.random() * 255);
+        try { sessionStorage.setItem('__pstream_spoof_ip', globalThis.__PSTREAM_SPOOF_IP); } catch(e) {}
+      }
     }
 
     if (!globalThis.__PSTREAM_ORIGINALS__) {
