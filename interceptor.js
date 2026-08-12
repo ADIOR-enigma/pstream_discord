@@ -385,8 +385,27 @@
           });
         }
         
-        p.then(res => { if (!res.ok) console.error('Fetch Failed:', u, res.status, res.statusText); })
-         .catch(err => { console.error('Fetch Error:', u, err.message); });
+        // ── Custom Proxy Error Dispatcher ──────────────────────────────────────────
+        function dispatchProxyError(type, url, status, message) {
+          try {
+            if (typeof window !== 'undefined' && window.dispatchEvent) {
+              window.dispatchEvent(new CustomEvent('pstream:proxy_error', {
+                detail: { type: type, url: url, status: status || 0, message: message || '' }
+              }));
+            }
+          } catch(e) {}
+        }
+
+        p.then(res => {
+          if (!res.ok) {
+            console.error('Fetch Failed:', u, res.status, res.statusText);
+            dispatchProxyError('fetch', u, res.status, res.statusText);
+          }
+        })
+        .catch(err => {
+          console.error('Fetch Error:', u, err.message);
+          dispatchProxyError('fetch', u, 0, err.message);
+        });
         return p;
       };
     }
@@ -399,10 +418,26 @@
         const rest = Array.prototype.slice.call(arguments, 2);
         const u = rewriteUrl(typeof url === 'string' ? url : (url ? url.toString() : url));
         this.addEventListener('load', function() {
-          if (this.status >= 400) console.error('XHR Failed:', u, this.status, this.statusText);
+          if (this.status >= 400) {
+            console.error('XHR Failed:', u, this.status, this.statusText);
+            try {
+              if (typeof window !== 'undefined' && window.dispatchEvent) {
+                window.dispatchEvent(new CustomEvent('pstream:proxy_error', {
+                  detail: { type: 'xhr', url: u, status: this.status, message: this.statusText }
+                }));
+              }
+            } catch(e) {}
+          }
         });
         this.addEventListener('error', function() {
           console.error('XHR Error:', u);
+          try {
+            if (typeof window !== 'undefined' && window.dispatchEvent) {
+              window.dispatchEvent(new CustomEvent('pstream:proxy_error', {
+                detail: { type: 'xhr', url: u, status: 0, message: 'XHR Error' }
+              }));
+            }
+          } catch(e) {}
         });
         return _open.apply(this, [method, u].concat(rest));
       };
