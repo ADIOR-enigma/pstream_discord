@@ -244,12 +244,29 @@
           return p.then(async (response) => {
             if (response.ok && response.headers.get('content-type')?.includes('application/json')) {
               try {
-                const wpRaw = localStorage.getItem('watch-party-storage');
-                if (wpRaw) {
-                  const wpState = JSON.parse(wpRaw);
-                  if (wpState && wpState.state && wpState.state.isHost) {
-                    return response;
-                  }
+                // ── Fix 1: isHost cache ────────────────────────────────────────────
+                // Reading + JSON.parse-ing localStorage on every 2-second poll blocks
+                // the main thread. Cache the result keyed by room code; only re-read
+                // when the room changes or when the cache is cold.
+                const roomCode = u.match(/roomCode=([^&]+)/)?.[1] || '';
+                if (!window.__wpHostCache || window.__wpHostCache.room !== roomCode) {
+                  let isHost = false;
+                  try {
+                    const wpRaw = localStorage.getItem('watch-party-storage');
+                    if (wpRaw) {
+                      const wpState = JSON.parse(wpRaw);
+                      isHost = !!(wpState && wpState.state && wpState.state.isHost);
+                    }
+                  } catch(e) {}
+                  window.__wpHostCache = { room: roomCode, isHost, ts: Date.now() };
+                }
+                // Refresh the cache every 10 seconds in case host role changes mid-session
+                if (Date.now() - window.__wpHostCache.ts > 10000) {
+                  window.__wpHostCache = null;
+                  return response; // will re-read on next poll
+                }
+                if (window.__wpHostCache.isHost) {
+                  return response; // host — do not intercept
                 }
 
                 const cloned = response.clone();
@@ -257,6 +274,15 @@
                 const video = document.getElementById('video-element');
                 
                 if (video && data && data.users) {
+                  // ── Fix 2: Video element remount detection ─────────────────────
+                  // On SPA navigation the player unmounts and a new <video> is created.
+                  // If the element reference changed, __lastHostPlaying is stale —
+                  // reset it so play/pause detection starts fresh on the new element.
+                  if (window.__wpLastVideoEl && window.__wpLastVideoEl !== video) {
+                    window.__lastHostPlaying = undefined;
+                  }
+                  window.__wpLastVideoEl = video;
+
                   const myTime = video.currentTime;
                   for (const userId in data.users) {
                     const statuses = data.users[userId];
@@ -269,31 +295,56 @@
                       const predictedHostTime = hostIsPlaying ? latest.player.time + elapsed : latest.player.time;
                       
                       const diff = myTime - predictedHostTime;
+                      const absDiff = Math.abs(diff);
                       
                       if (hostIsPlaying) {
-                        const absDiff = Math.abs(diff);
-                        
                         if (absDiff <= 5) {
-                          // Gap is <= 5 seconds. Spoof host time to perfectly match guest time, 
-                          // and force P-Stream elapsed to 0 initially to prevent micro-seeks/buffering.
+                          // Gap is <= 5 seconds: spoof host time to guest time to prevent micro-seeks.
                           latest.player.time = myTime;
                           latest.timestamp = Date.now();
+                        } else {
+                          // ── Fix 4: Reset state on hard-seek ───────────────────
+                          // Host seeked > 5 sec away — P-Stream will do a native hard-seek.
+                          // Reset __lastHostPlaying so we don't miss a pause that immediately
+                          // follows the seek (the state machine would otherwise think it already
+                          // processed the current play state and skip the event).
+                          window.__lastHostPlaying = undefined;
                         }
-                        // If gap > 5 seconds, we do NOT spoof. This allows P-Stream to detect 
-                        // the massive drift and perform a native hard-seek (buffering jump).
+                        // If gap > 5 seconds, we do NOT spoof. P-Stream detects the
+                        // drift and performs a native hard-seek (buffering jump).
                       }
                       
                       // CRITICAL FIX: Bypass P-Stream's 250ms SEEK_SETTLE_MS delay and React render cycle.
                       if (window.__lastHostPlaying !== hostIsPlaying) {
-                          // Only manually override on Play if within threshold.
-                          if (hostIsPlaying) {
-                              if (Math.abs(diff) <= 5) {
-                                  video.play().catch(e => {});
+                        if (hostIsPlaying) {
+                          if (absDiff <= 5) {
+                            // ── Fix 3: Autoplay policy guard ──────────────────────
+                            // video.play() returns a Promise that rejects with NotAllowedError
+                            // when the browser's autoplay policy blocks it (no prior user gesture).
+                            // Silently swallowing this leaves the guest paused indefinitely.
+                            // Instead: on block, register a one-shot user-gesture listener so
+                            // playback resumes on the guest's next click or keypress.
+                            video.play().catch(function(playErr) {
+                              if (playErr && playErr.name === 'NotAllowedError') {
+                                if (!window.__wpPlayRetryBound) {
+                                  window.__wpPlayRetryBound = true;
+                                  function resumeOnGesture() {
+                                    window.__wpPlayRetryBound = false;
+                                    document.removeEventListener('click', resumeOnGesture, true);
+                                    document.removeEventListener('keydown', resumeOnGesture, true);
+                                    const v = document.getElementById('video-element');
+                                    if (v && v.paused) v.play().catch(function() {});
+                                  }
+                                  document.addEventListener('click', resumeOnGesture, { capture: true, once: true });
+                                  document.addEventListener('keydown', resumeOnGesture, { capture: true, once: true });
+                                }
                               }
-                          } else {
-                              video.pause();
+                            });
                           }
-                          window.__lastHostPlaying = hostIsPlaying;
+                        } else {
+                          video.pause();
+                        }
+                        window.__lastHostPlaying = hostIsPlaying;
                       }
                       
                       // Ensure we never use soft-sync (playback speed adjustments) anymore
