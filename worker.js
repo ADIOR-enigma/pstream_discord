@@ -185,7 +185,7 @@ export default {
     for (const [key, value] of request.headers.entries()) {
       const lower = key.toLowerCase();
       if (lower.startsWith('cf-') || lower === 'host' || lower === 'origin' ||
-          lower === 'referer' ||
+          lower === 'referer' || lower === 'cookie' ||
           lower === 'if-none-match' || lower === 'if-modified-since' || lower === 'if-range' ||
           lower.startsWith('x-forwarded') || lower.startsWith('sec-')) {
         continue;
@@ -326,26 +326,24 @@ export default {
       responseHeaders.delete('Last-Modified');
       responseHeaders.set('Cache-Control', 'no-cache, no-store, must-revalidate');
 
-      if (isHtml) {
-        // Strip SRI integrity attrs (our JS injection invalidates them)
-        text = text.replace(/\s*integrity=["'][^"']*["']/gi, '');
+      // Strip SRI integrity attrs (our JS injection invalidates them)
+      text = text.replace(/\s*integrity=["'][^"']*["']/gi, '');
 
-        // Extract existing CSP nonce so our injected <script> isn't blocked
-        // Discord's embed proxy sets:  script-src 'self' 'unsafe-eval' 'nonce-XXXX' blob:
-        // Our script MUST carry that nonce or it will be rejected.
-        let nonce = '';
-        const nonceMatch = text.match(/\bnonce="([^"]+)"/i) || text.match(/\bnonce='([^']+)'/i);
-        if (nonceMatch) nonce = nonceMatch[1];
+      // Extract existing CSP nonce so our injected <script> isn't blocked.
+      // Discord's embed proxy sets:  script-src 'self' 'unsafe-eval' 'nonce-XXXX' blob:
+      // Our script MUST carry that nonce or it will be rejected.
+      let nonce = '';
+      const nonceMatch = text.match(/\bnonce="([^"]+)"/i) || text.match(/\bnonce='([^']+)'/i);
+      if (nonceMatch) nonce = nonceMatch[1];
 
-        const nonceAttr = nonce ? ` nonce="${nonce}"` : '';
-        const dataNonceAttr = nonce ? ` data-proxy-nonce="${nonce}"` : '';
-        const scriptTag = `<script src="/p-interceptor.js"${nonceAttr}${dataNonceAttr}></script>`;
+      const nonceAttr = nonce ? ` nonce="${nonce}"` : '';
+      const dataNonceAttr = nonce ? ` data-proxy-nonce="${nonce}"` : '';
+      const scriptTag = `<script src="/p-interceptor.js"${nonceAttr}${dataNonceAttr}></script>`;
 
-        if (/<head[^>]*>/i.test(text)) {
-          text = text.replace(/(<head[^>]*>)/i, `$1\n${scriptTag}`);
-        } else {
-          text = scriptTag + text;
-        }
+      if (/<head[^>]*>/i.test(text)) {
+        text = text.replace(/(<head[^>]*>)/i, `$1\n${scriptTag}`);
+      } else {
+        text = scriptTag + text;
       }
       // NOTE: We intentionally do NOT inject into JS files.
       // The <head> injection above runs first and patches fetch/XHR/URL
